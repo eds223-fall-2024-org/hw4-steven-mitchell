@@ -1,0 +1,18 @@
+---
+title: "Homework Assignment #4"
+subtitle: "Prioritizing potential aquaculture"
+author: "Steven Mitchell"
+date: last-modified
+execute: 
+  eval: false
+  echo: true
+  warning: false
+  message: false
+format:
+  html:
+    toc: true
+    code-fold: true
+    theme: sandstone
+editor_options: 
+  chunk_output_type: console
+---
