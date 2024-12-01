@@ -16,3 +16,221 @@ format:
 editor_options: 
   chunk_output_type: console
 ---
+# Set Up
+## Libraries
+```{r libraries}
+library(tmap)
+library(terra)
+library(sf)
+library(tidyverse)
+library(here)
+library(viridis)
+library(stars)
+```
+## Load Data
+```{r load data, message = TRUE, warning = TRUE}
+# sea surface temp
+filelist <- list.files(here("data", "sst"), full.names = TRUE)
+
+sst_raw <- rast(filelist)
+
+## check / transform sst crs
+if(st_crs(sst_raw) == st_crs("EPSG: 4326")){
+  print("SST CRS is already WGS84")
+} else{
+  warning("Updated SST CRS to WGS 84")
+  sst_raw <- project(sst_raw, "EPSG: 4326")
+}
+
+# bathymetry
+depth_raw <- rast(here("data", "depth.tif"))
+
+## check / transform depth CRS
+if(st_crs(depth_raw) == st_crs("EPSG: 4326")){
+  print("Depth CRS is already WGS84")
+} else{
+  warning("Updated SST CRS to WGS 84")
+  depth_raw <- project(depth_raw, "EPSG: 4326")
+}
+
+# exclusive economic zones
+eez_vector <- read_sf(here("data", "wc_regions_clean.shp"))
+
+## check / transform EEZ CRS 
+if(st_crs(eez_vector) == st_crs("EPSG: 4326")){
+  print("EEZ CRS is already WGS84")
+} else{
+  warning("Updated EEZ CRS to WGS84")
+  eez_vector <- st_transform(eez_vector, st_crs("EPSG: 4326"))
+}
+```
+## Process Data
+```{r process data}
+# rasterize the exclusive economic zones
+eez_raster <- rasterize(eez_vector, sst_raw, field="rgn")
+
+# combine annual sst into overall average
+sst_k <- mean(sst_raw)
+
+# convert sst from kelvin to celsius
+sst_c <- sst_k - 273.15
+
+# mask sst to eez shape
+sst_masked <- mask(sst_c, eez_vector)
+
+# rename sst and remove intermediate objects
+sst <- sst_masked
+rm(list ="sst_k", "sst_c", "sst_masked")
+
+# resample depth to sst resolution
+depth_resampled <- resample(depth_raw, sst, method = "near")
+
+# crop depth to sst extent
+depth_cropped <- crop(depth_resampled, sst)
+
+# mask depth to eez shape
+depth_masked <- mask(depth_cropped, eez_raster)
+
+# rename depth and remove intermediate objects
+depth <- depth_masked
+rm(list= "depth_raw", "depth_resampled", "depth_cropped", "depth_masked")
+```
+# Part 1: Find Areas Suitable for Aquaculture of Oysters
+## Calculate Suitability
+```{r oyster suitability}
+rcl_oyster_sst <- matrix(c(-Inf, 11, NA,
+                          11, 30, 1,
+                          30, Inf, NA),
+                          ncol=3, byrow=TRUE)
+
+rcl_oyster_depth <- matrix(c(-Inf, -70, NA,
+                              -70, 0, 1,
+                              0, Inf, NA),
+                              ncol=3, byrow=TRUE)
+
+oyster_suitability_sst <- classify(sst, rcl = rcl_oyster_sst)
+
+oyster_suitability_depth <- classify(depth, rcl = rcl_oyster_depth)
+
+oyster_suitability_stack <- c(oyster_suitability_sst, oyster_suitability_depth)
+
+# make a multiply function
+multiply <- function(x,y){
+  return(x*y)
+}
+
+# use the multiply function to get only cells that are 1 for both variabeles
+oyster_suitability <- lapp(oyster_suitability_stack[[c(1,2)]], fun = multiply)
+
+```
+
+### Map Suitability
+```{r exp maps, execute = TRUE}
+  tm_shape(oyster_suitability)+
+  tm_raster(palette = c("lightblue", "darkgreen"),
+            n = 2,
+            title = "",
+            labels = c("Unsuitable", "Suitable"))+
+  tm_layout(main.title = "Oyster Aquaculture Suitability",
+            legend.position = c("left", "bottom"))+
+  tm_compass()+
+  tm_scale_bar()
+```
+
+## Calculate Relative Suitability by EEZ
+```{r execute = TRUE }
+#crop eez_raw to suitability raster
+eez_mask <- crop(eez_raster, oyster_suitability, mask = TRUE)
+
+# find area of raster cells 
+cell_area <- cellSize(eez_raster, unit = "km")
+
+#calculate the total suitable area of km2 by region
+suitability_area <- zonal(cell_area, eez_mask, fun = "sum", na.rm = TRUE)
+
+# joining suitability area
+eez_suitability_vector <- left_join(eez_vector, suitability_area, by = "rgn") %>% 
+  mutate(suitable_area_km2 = area,
+         .before =geometry)
+```
+
+## Map Exclusive Economic Zones by Suitable Area
+```{r}
+tm_shape(eez_suitability_vector)+
+  tm_polygons(col = "suitable_area_km2",
+              palette = mako(5),
+              title = "Suitable Area (sq km)")+
+  tm_compass(position = c("left", "bottom"))+
+  tm_scale_bar(position = c("left", "bottom"))
+```
+
+
+Central California has the most suitable area with **4069.5671 square kilometers**.
+
+# Part 2: Automate this workflow as a function
+## The Function
+```{r}
+spp_suitability <- function(species = "NAME", depth_min, depth_max, 
+                                              sst_min, sst_max) {
+  
+
+rcl_sst <- matrix(c(-Inf, sst_min, NA,
+                          sst_min, sst_max, 1,
+                          sst_max, Inf, NA),
+                          ncol=3, byrow=TRUE)
+
+rcl_depth <- matrix(c(-Inf, depth_min, NA,
+                              depth_min, depth_max, 1,
+                              depth_max, Inf, NA),
+                              ncol=3, byrow=TRUE)
+
+suitability_sst <- classify(sst, rcl = rcl_sst)
+
+suitability_depth <- classify(depth, rcl = rcl_depth)
+
+suitability_stack <- c(suitability_sst, suitability_depth)
+
+# use the multiply function to get only cells that are 1 for both variabeles
+suitability <- lapp(suitability_stack[[c(1,2)]], fun = multiply)
+
+#crop eez_raw to suitability raster
+eez_mask <- crop(eez_raster, suitability, mask = TRUE)
+
+# find area of raster cells 
+cell_area <- cellSize(eez_raster, unit = "km")
+
+#calculate the total suitable area of km2 by region
+suitability_area <- zonal(cell_area, eez_mask, fun = "sum", na.rm = TRUE)
+
+# joining suitability area
+eez_suitability_vector <- left_join(eez_vector, suitability_area, by = "rgn") %>% 
+  mutate(suitable_area_km2 = area,
+         .before =geometry)
+
+map <- tm_shape(eez_suitability_vector)+
+  tm_polygons(col = "suitable_area_km2",
+              palette = "RdYlGn",
+              title = "Suitable Area (sq km)")+
+  tm_compass(position = c("left", "bottom"))+
+  tm_scale_bar(position = c("left", "bottom"))+
+  tm_layout(main.title = species)
+
+tmap_save(map, paste0(species, "_map.png"))
+}
+```
+
+## Test the function with oysters
+```{r}
+spp_suitability("Oysters", -70, 0, 11, 30)
+```
+
+![](Oysters_map.png)
+
+## Run the function with Dungeness Crab
+Dungeness crab (*Metacarcinus magister*) are adapted to the depth range 0 - 360 meters and a temperature range of 3 - 19 degreees Celsius. 
+```{r}
+spp_suitability("Dungeness_Crab", -360, 0, 3, 19)
+```
+
+![](Dungeness_Crab_map.png)
+
