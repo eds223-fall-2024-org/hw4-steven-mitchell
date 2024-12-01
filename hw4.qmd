@@ -12,13 +12,18 @@ format:
   html:
     toc: true
     code-fold: true
-    theme: sandstone
+    theme: lux
 editor_options: 
   chunk_output_type: console
 ---
 # Set Up
-## Libraries
+
+Here, I have been tasked with identifying the most suitable Exclusive Economic Zones (EEZ) for aquactulture development of oysters and Dungeness crab (*Metacarcinus magister*) through construction of an auotmated function. This analysis is based on the variables of sea depth and sea surface temperature.
+
+The code chunk below details the R packages used, data loading, and data processing.
 ```{r libraries}
+## Libraries
+
 library(tmap)
 library(terra)
 library(sf)
@@ -26,9 +31,9 @@ library(tidyverse)
 library(here)
 library(viridis)
 library(stars)
-```
+
 ## Load Data
-```{r load data, message = TRUE, warning = TRUE}
+
 # sea surface temp
 filelist <- list.files(here("data", "sst"), full.names = TRUE)
 
@@ -63,9 +68,9 @@ if(st_crs(eez_vector) == st_crs("EPSG: 4326")){
   warning("Updated EEZ CRS to WGS84")
   eez_vector <- st_transform(eez_vector, st_crs("EPSG: 4326"))
 }
-```
+
 ## Process Data
-```{r process data}
+
 # rasterize the exclusive economic zones
 eez_raster <- rasterize(eez_vector, sst_raw, field="rgn")
 
@@ -96,8 +101,13 @@ depth <- depth_masked
 rm(list= "depth_raw", "depth_resampled", "depth_cropped", "depth_masked")
 ```
 # Part 1: Find Areas Suitable for Aquaculture of Oysters
-## Calculate Suitability
+
+Oysters are adapted to a depth range of 0 - 70 meters and a temperature range of 11 - 30 degrees Celsius. 
+
+The code chunk below details the steps of my analysis.
 ```{r oyster suitability}
+## Calculate Suitability
+
 rcl_oyster_sst <- matrix(c(-Inf, 11, NA,
                           11, 30, 1,
                           30, Inf, NA),
@@ -122,23 +132,8 @@ multiply <- function(x,y){
 # use the multiply function to get only cells that are 1 for both variabeles
 oyster_suitability <- lapp(oyster_suitability_stack[[c(1,2)]], fun = multiply)
 
-```
+## Calculate & Map Relative Suitability by EEZ
 
-### Map Suitability
-```{r exp maps, execute = TRUE}
-  tm_shape(oyster_suitability)+
-  tm_raster(palette = c("lightblue", "darkgreen"),
-            n = 2,
-            title = "",
-            labels = c("Unsuitable", "Suitable"))+
-  tm_layout(main.title = "Oyster Aquaculture Suitability",
-            legend.position = c("left", "bottom"))+
-  tm_compass()+
-  tm_scale_bar()
-```
-
-## Calculate Relative Suitability by EEZ
-```{r execute = TRUE }
 #crop eez_raw to suitability raster
 eez_mask <- crop(eez_raster, oyster_suitability, mask = TRUE)
 
@@ -152,24 +147,33 @@ suitability_area <- zonal(cell_area, eez_mask, fun = "sum", na.rm = TRUE)
 eez_suitability_vector <- left_join(eez_vector, suitability_area, by = "rgn") %>% 
   mutate(suitable_area_km2 = area,
          .before =geometry)
-```
+
 
 ## Map Exclusive Economic Zones by Suitable Area
-```{r}
-tm_shape(eez_suitability_vector)+
-  tm_polygons(col = "suitable_area_km2",
-              palette = mako(5),
-              title = "Suitable Area (sq km)")+
+map_oysters <- tm_shape(eez_vector)+
+  tm_borders(lwd =2)+
+  tm_shape(eez_suitability_vector)+
+  tm_fill(col = "suitable_area_km2",
+              palette = "RdYlGn",
+              style = "cat",
+              title = "Suitable Area (sq km)",
+              labels = )+
   tm_compass(position = c("left", "bottom"))+
   tm_scale_bar(position = c("left", "bottom"))
+
+tmap_save(map_oysters, "part1_oyster_map.png")
 ```
+![](part1_oyster_map.png)
 
+## Results Interpretation
+The Central California EEZ has the most suitable area for oyster aquaculture with **4069 square kilometers** and should therefore be prioritized as the most suitable EEZ for aquaculture development.
 
-Central California has the most suitable area with **4069.5671 square kilometers**.
+# Part 2: Automate This Workflow as a Function 
 
-# Part 2: Automate this workflow as a function
-## The Function
+The code chunk below details the construction of my function to automate the Part 1 analysis with additional species.
+
 ```{r}
+## Build The Function
 spp_suitability <- function(species = "NAME", depth_min, depth_max, 
                                               sst_min, sst_max) {
   
@@ -207,30 +211,47 @@ eez_suitability_vector <- left_join(eez_vector, suitability_area, by = "rgn") %>
   mutate(suitable_area_km2 = area,
          .before =geometry)
 
-map <- tm_shape(eez_suitability_vector)+
-  tm_polygons(col = "suitable_area_km2",
+map <- tm_shape(eez_vector)+
+  tm_borders(lwd =2)+
+  tm_shape(eez_suitability_vector)+
+  tm_fill(col = "suitable_area_km2",
               palette = "RdYlGn",
-              title = "Suitable Area (sq km)")+
+              title = "Suitable Area (sq km)",
+          style = "cat")+
   tm_compass(position = c("left", "bottom"))+
   tm_scale_bar(position = c("left", "bottom"))+
   tm_layout(main.title = species)
 
 tmap_save(map, paste0(species, "_map.png"))
+
+map
 }
-```
 
 ## Test the function with oysters
-```{r}
+
 spp_suitability("Oysters", -70, 0, 11, 30)
 ```
 
-![](Oysters_map.png)
 
-## Run the function with Dungeness Crab
-Dungeness crab (*Metacarcinus magister*) are adapted to the depth range 0 - 360 meters and a temperature range of 3 - 19 degreees Celsius. 
+## Applying the function with Dungeness Crab
+Dungeness crab (*Metacarcinus magister*) are adapted to the depth range 0 - 360 meters and a temperature range of 3 - 19 degrees Celsius. Based on these ranges of the two variables, my function produces the following analysis of area suitable for aquaculture of Dungeness crab. 
+
+The code chunk below provides a functional example applying my function to Dungeness crab.
+
 ```{r}
 spp_suitability("Dungeness_Crab", -360, 0, 3, 19)
 ```
 
 ![](Dungeness_Crab_map.png)
 
+## Results Interpretation
+
+The Oregon EEZ is the most suitable for aquaculture development Dungeness Crab with **19,300 square kilometers** of suitable area.
+
+# Citations
+| Source | Link |
+| -----|  ------|
+| Sea Life Base | https://www.sealifebase.ca/search.php |
+| Sea Surface Temperature | https://coralreefwatch.noaa.gov/product/5km/index_5km_ssta.php |
+| Bathymetry |https://www.gebco.net/data_and_products/gridded_bathymetry_data/#area |
+| Exclusive economic zones | https://www.marineregions.org/eez.php |
